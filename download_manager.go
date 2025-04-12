@@ -6,6 +6,7 @@ import (
 	"gtorrent/db/models"
 	"gtorrent/torrent"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -224,32 +225,271 @@ func createEmptyFiles(tor *torrent.Torrent, downloadPath string) error {
 	return nil
 }
 
+// peerConnectionState holds the state for a connection to a single peer
+// during a piece download attempt.
+type peerConnectionState struct {
+	peer       *torrent.Peer
+	conn       net.Conn
+	bitfield   torrent.Bitfield
+	peerChoked bool
+	startTime  time.Time // To track connection duration/timeouts
+}
+
+// close closes the connection to the peer.
+func (pcs *peerConnectionState) close() {
+	if pcs.conn != nil {
+		pcs.conn.Close()
+	}
+}
+
+// sendRequest sends a Request message to the peer.
+func (pcs *peerConnectionState) sendRequest(pieceIndex, begin, length uint32) error {
+	reqPayload := torrent.FormatRequest(pieceIndex, begin, length)
+	msg := torrent.Message{Type: torrent.MsgRequest, Payload: reqPayload}
+	_, err := pcs.conn.Write(msg.Serialize())
+	return err
+}
+
 // downloadPieceFromPeers attempts to download a specific piece from available peers.
 // It tries different peers until the piece is successfully downloaded.
 func downloadPieceFromPeers(tor *torrent.Torrent, pieceIndex int, peers map[string]*torrent.Peer) ([]byte, error) {
-	// This is a placeholder implementation that would be replaced with actual peer communication
-	// In a real implementation, this would:
-	// 1. Send request messages to peers
-	// 2. Receive piece data
-	// 3. Handle timeouts and connection issues
-
-	// For now, return a simulated piece for demonstration purposes
-	// This needs to be replaced with actual peer communication code
-	log.Debug().Msgf("Would download piece %d from peers", pieceIndex)
-
-	// Placeholder: Simulate a successful download with random data
-	// In a real implementation, remove this and implement proper peer protocol
 	pieceLength := tor.PieceLength
 	if pieceIndex == len(tor.Pieces)-1 {
-		// Last piece might be shorter
 		lastPieceSize := tor.Length % tor.PieceLength
 		if lastPieceSize > 0 {
 			pieceLength = lastPieceSize
 		}
 	}
 
-	// This is just a placeholder and should be replaced with actual peer communication
-	return make([]byte, pieceLength), nil
+	// TODO: Get our actual Peer ID
+	var selfPeerID [20]byte
+	copy(selfPeerID[:], "-GT0001-000000000000") // Placeholder Peer ID
+
+	// Iterate through available peers.
+	for _, peer := range peers {
+		state := &peerConnectionState{
+			peer:       peer,
+			peerChoked: true, // Assume choked initially
+			startTime:  time.Now(),
+		}
+
+		log.Debug().Msgf("Attempting to download piece %d from peer %s", pieceIndex, peer.String())
+
+		// 3. Establish connection
+		conn, err := net.DialTimeout("tcp", peer.String(), 10*time.Second)
+		if err != nil {
+			log.Warn().Msgf("Failed to connect to peer %s: %v", peer.String(), err)
+			continue // Try next peer
+		}
+		state.conn = conn
+		defer state.close() // Ensure connection is closed
+
+		// 4. Perform BitTorrent handshake
+		_, err = torrent.PerformHandshake(state.conn, tor, selfPeerID)
+		if err != nil {
+			log.Warn().Msgf("Handshake failed with peer %s: %v", peer.String(), err)
+			continue // Try next peer
+		}
+		log.Debug().Msgf("Handshake successful with peer %s", peer.String())
+
+		// 5. Exchange messages (Bitfield, Interested, Unchoke)
+		// Read the first message, expecting Bitfield (or Have)
+		msg, err := readMessageWithTimeout(state.conn, 10*time.Second)
+		if err != nil {
+			log.Warn().Msgf("Failed to read initial message from peer %s: %v", peer.String(), err)
+			continue
+		}
+
+		if msg.Type == torrent.MsgBitfield {
+			if len(msg.Payload) != (len(tor.Pieces)+7)/8 {
+				log.Warn().Msgf("Received invalid bitfield length from %s", peer.String())
+				continue
+			}
+			state.bitfield = torrent.Bitfield(msg.Payload)
+			log.Debug().Msgf("Received Bitfield from %s", peer.String())
+		} else {
+			// If no bitfield, initialize an empty one and process the first message (likely Have)
+			state.bitfield = make(torrent.Bitfield, (len(tor.Pieces)+7)/8)
+			if err := handleMessage(state, msg, pieceIndex); err != nil {
+				log.Warn().Msgf("Error handling first message from %s: %v", peer.String(), err)
+				continue
+			}
+		}
+
+		// Check if peer has the piece we want
+		if !state.bitfield.HasPiece(pieceIndex) {
+			log.Debug().Msgf("Peer %s does not have piece %d", peer.String(), pieceIndex)
+			continue // Try next peer
+		}
+		log.Debug().Msgf("Peer %s has piece %d", peer.String(), pieceIndex)
+
+		// Send Interested message
+		interestedMsg := torrent.Message{Type: torrent.MsgInterested}
+		_, err = state.conn.Write(interestedMsg.Serialize())
+		if err != nil {
+			log.Warn().Msgf("Failed to send Interested to %s: %v", peer.String(), err)
+			continue
+		}
+		log.Debug().Msgf("Sent Interested to %s", peer.String())
+
+		// 6 & 7. Request blocks and receive piece data
+		pieceData, err := downloadPieceFromChokedPeer(state, tor, pieceIndex, pieceLength)
+		if err != nil {
+			log.Warn().Msgf("Failed to download piece %d from %s: %v", pieceIndex, peer.String(), err)
+			continue // Try next peer
+		}
+
+		// 8. Piece successfully downloaded
+		log.Info().Msgf("Successfully downloaded piece %d from peer %s", pieceIndex, peer.String())
+		return pieceData, nil
+	}
+
+	// 9. If piece could not be downloaded from any peer:
+	return nil, fmt.Errorf("failed to download piece %d from any available peer", pieceIndex)
+}
+
+// readMessageWithTimeout reads a message with a specific timeout.
+func readMessageWithTimeout(conn net.Conn, timeout time.Duration) (*torrent.Message, error) {
+	conn.SetReadDeadline(time.Now().Add(timeout))
+	defer conn.SetReadDeadline(time.Time{}) // Clear deadline
+	return torrent.ReadMessage(conn)
+}
+
+// downloadPieceFromChokedPeer handles the message loop for downloading a piece
+// after the initial handshake and bitfield exchange.
+func downloadPieceFromChokedPeer(state *peerConnectionState, tor *torrent.Torrent, pieceIndex int, pieceLength int64) ([]byte, error) {
+	pieceBuf := make([]byte, pieceLength)
+	downloadedBytes := int64(0)
+	requestedBlocks := 0
+	receivedBlocks := 0
+	backlog := 0 // Number of requests currently pending
+
+	// Calculate total blocks needed
+	totalBlocks := int(pieceLength+torrent.BlockSize-1) / torrent.BlockSize
+
+	// Timeout for the entire piece download from this peer
+	pieceDownloadTimeout := time.After(60 * time.Second)
+
+	for receivedBlocks < totalBlocks {
+		select {
+		case <-pieceDownloadTimeout:
+			return nil, fmt.Errorf("piece download timed out")
+		default:
+			// Only send requests if not choked and backlog is low
+			if !state.peerChoked {
+				for backlog < torrent.MaxBacklog && requestedBlocks < totalBlocks {
+					blockOffset := int64(requestedBlocks) * torrent.BlockSize
+					blockSize := torrent.BlockSize
+					// Adjust size for the last block
+					if blockOffset+int64(blockSize) > pieceLength {
+						blockSize = int(pieceLength - blockOffset)
+					}
+
+					err := state.sendRequest(uint32(pieceIndex), uint32(blockOffset), uint32(blockSize))
+					if err != nil {
+						return nil, fmt.Errorf("failed to send request: %w", err)
+					}
+					requestedBlocks++
+					backlog++
+					log.Trace().Msgf("Requested block %d/%d (offset %d, size %d) for piece %d from %s",
+						requestedBlocks, totalBlocks, blockOffset, blockSize, pieceIndex, state.peer.String())
+				}
+			}
+
+			// Read the next message from the peer
+			// Use a shorter timeout for individual messages once unchoked
+			readTimeout := 30 * time.Second
+			if state.peerChoked {
+				readTimeout = 10 * time.Second // Longer timeout while waiting for unchoke
+			}
+			msg, err := readMessageWithTimeout(state.conn, readTimeout)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read message: %w", err)
+			}
+
+			if err := handleMessage(state, msg, pieceIndex); err != nil {
+				return nil, fmt.Errorf("error handling message: %w", err)
+			}
+
+			// Handle Piece message
+			if msg.Type == torrent.MsgPiece {
+				index, begin, data, err := torrent.ParsePiece(msg.Payload)
+				if err != nil {
+					return nil, fmt.Errorf("failed to parse piece message: %w", err)
+				}
+				if int(index) != pieceIndex {
+					log.Warn().Msgf("Received piece message for wrong index %d (expected %d) from %s",
+						index, pieceIndex, state.peer.String())
+					continue // Ignore
+				}
+				if int64(begin)+int64(len(data)) > pieceLength {
+					return nil, fmt.Errorf("received block data exceeds piece length (begin %d, len %d, pieceLen %d)",
+						begin, len(data), pieceLength)
+				}
+
+				copy(pieceBuf[begin:], data)
+				downloadedBytes += int64(len(data))
+				receivedBlocks++
+				backlog--
+				log.Trace().Msgf("Received block (offset %d, size %d) for piece %d from %s. Total %d/%d blocks, %d/%d bytes",
+					begin, len(data), pieceIndex, state.peer.String(), receivedBlocks, totalBlocks, downloadedBytes, pieceLength)
+			}
+		}
+	}
+
+	if downloadedBytes != pieceLength {
+		return nil, fmt.Errorf("downloaded size mismatch: expected %d, got %d", pieceLength, downloadedBytes)
+	}
+
+	return pieceBuf, nil
+}
+
+// handleMessage processes incoming messages from a peer.
+func handleMessage(state *peerConnectionState, msg *torrent.Message, currentPieceIndex int) error {
+	switch msg.Type {
+	case torrent.MsgKeepAlive:
+		log.Trace().Msgf("Received KeepAlive from %s", state.peer.String())
+	case torrent.MsgChoke:
+		log.Debug().Msgf("Received Choke from %s", state.peer.String())
+		state.peerChoked = true
+	case torrent.MsgUnchoke:
+		log.Debug().Msgf("Received Unchoke from %s", state.peer.String())
+		state.peerChoked = false
+	case torrent.MsgInterested:
+		log.Trace().Msgf("Received Interested from %s (ignoring)", state.peer.String())
+		// We are the downloader, typically don't need to handle peer's interest
+	case torrent.MsgNotInterested:
+		log.Trace().Msgf("Received NotInterested from %s (ignoring)", state.peer.String())
+	case torrent.MsgHave:
+		index, err := torrent.ParseHave(msg.Payload)
+		if err != nil {
+			return fmt.Errorf("failed to parse Have message from %s: %w", state.peer.String(), err)
+		}
+		if state.bitfield != nil {
+			state.bitfield.SetPiece(int(index))
+			log.Trace().Msgf("Received Have for piece %d from %s", index, state.peer.String())
+		} else {
+			log.Warn().Msgf("Received Have message before Bitfield from %s", state.peer.String())
+			// Handle appropriately, maybe request bitfield again or disconnect
+		}
+	case torrent.MsgBitfield:
+		// Should have been handled earlier, but log if received again
+		log.Warn().Msgf("Received unexpected Bitfield message from %s", state.peer.String())
+	case torrent.MsgRequest:
+		log.Trace().Msgf("Received Request from %s (ignoring)", state.peer.String())
+		// We are the downloader, typically don't fulfill requests
+	case torrent.MsgPiece:
+		// Handled in the downloadPieceFromChokedPeer loop
+		// No action needed here for MsgPiece, just prevents falling into default
+
+	case torrent.MsgCancel:
+		log.Trace().Msgf("Received Cancel from %s (ignoring)", state.peer.String())
+	case torrent.MsgPort:
+		log.Trace().Msgf("Received Port from %s (ignoring)", state.peer.String())
+	default:
+		log.Warn().Msgf("Received unknown message type %d from %s", msg.Type, state.peer.String())
+	}
+	return nil
 }
 
 // writePiece writes a downloaded piece to the correct position in the file(s).
