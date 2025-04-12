@@ -52,12 +52,15 @@ func main() {
 }
 
 func initConfig() {
-
 	// create the cache directory
-	os.MkdirAll(config.Main.CacheDir, os.ModePerm)
+	if err := os.MkdirAll(config.Main.CacheDir, os.ModePerm); err != nil {
+		log.Fatal().Err(err).Str("path", config.Main.CacheDir).Msg("Failed to create cache directory")
+	}
 
 	// create the download directory
-	os.MkdirAll(config.Main.DownloadDir, os.ModePerm)
+	if err := os.MkdirAll(config.Main.DownloadDir, os.ModePerm); err != nil {
+		log.Fatal().Err(err).Str("path", config.Main.DownloadDir).Msg("Failed to create download directory")
+	}
 }
 
 func initDB() {

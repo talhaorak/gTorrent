@@ -11,6 +11,9 @@ type Download struct {
 	DownloadDir     string
 	TotalSize       int64
 	DownloadedSize  int64
+	Progress        int
+	LastError       string
+	CompletedAt     int64
 
 	Peers    []Peer
 	Pieces   []Piece
@@ -20,11 +23,14 @@ type Download struct {
 type DownloadStatus = string
 
 const (
-	Invalid     DownloadStatus = "invalid"
-	Downloading DownloadStatus = "downloading"
-	Complete    DownloadStatus = "complete"
-	Error       DownloadStatus = "error"
-	Paused      DownloadStatus = "paused"
+	Invalid            DownloadStatus = "invalid"
+	Downloading        DownloadStatus = "downloading"
+	DownloadInProgress DownloadStatus = "in_progress"
+	Complete           DownloadStatus = "complete"
+	DownloadComplete   DownloadStatus = "complete"
+	Error              DownloadStatus = "error"
+	DownloadError      DownloadStatus = "error"
+	Paused             DownloadStatus = "paused"
 )
 
 type Peer struct {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"gtorrent/config"
 	"gtorrent/db/models"
 	"gtorrent/torrent"
@@ -14,6 +15,13 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// DownloadTorrent initiates the download of content defined in a torrent file.
+// It reads the torrent file, parses its contents, copies it to the cache directory,
+// creates a database entry for the download, and contacts trackers to find peers.
+// Parameters:
+//   - torrentFile: Path to the .torrent file to be downloaded
+//
+// Returns an error if any step of the process fails, or nil on success.
 func DownloadTorrent(torrentFile string) error {
 	log.Info().Msg("Downloading torrent: " + torrentFile)
 
@@ -46,9 +54,15 @@ func DownloadTorrent(torrentFile string) error {
 	for _, announce := range tor.AnnounceList {
 		tracker, err := torrent.NewTracker(announce)
 		if err != nil {
-			return err
+			log.Warn().Err(err).Str("tracker", announce).Msg("Failed to create tracker, skipping")
+			continue
 		}
 		trackers = append(trackers, tracker)
+	}
+
+	// Only fail if we have no working trackers
+	if len(trackers) == 0 {
+		return fmt.Errorf("no valid trackers found")
 	}
 
 	// Get the peers from the trackers
@@ -95,5 +109,36 @@ func DownloadTorrent(torrentFile string) error {
 		}(trackerIndex, tracker)
 	}
 	wg.Wait()
+
+	// Update the download status
+	dlModel.Status = models.DownloadInProgress
+	mainDB.UpdateDownload(dlModel)
+
+	log.Info().Msgf("Found %d peers for download", len(peers))
+	if len(peers) == 0 {
+		log.Warn().Msg("No peers found for download, will retry later")
+		return nil
+	}
+
+	// Create destination directory
+	downloadPath := filepath.Join(config.Main.DownloadDir, tor.Name)
+	err = os.MkdirAll(downloadPath, os.ModePerm)
+	if err != nil {
+		dlModel.Status = models.DownloadError
+		dlModel.LastError = fmt.Sprintf("Failed to create download directory: %s", err.Error())
+		mainDB.UpdateDownload(dlModel)
+		return err
+	}
+
+	// Initialize download manager and start download
+	log.Info().Msg("Starting download of pieces")
+	err = startDownloadFromPeers(tor, peers, downloadPath, dlModel)
+	if err != nil {
+		dlModel.Status = models.DownloadError
+		dlModel.LastError = err.Error()
+		mainDB.UpdateDownload(dlModel)
+		return err
+	}
+
 	return nil
 }

@@ -87,6 +87,10 @@ func (f *File) String() string {
 	return fmt.Sprintf("Path: %s(%s)", f.Path, utils.FormatBytes(f.Length))
 }
 
+// TorrentFromBencodeData converts bencode data into a Torrent struct.
+// It extracts all torrent metadata including announce lists, file information,
+// piece hashes, and other properties from the bencode data.
+// Returns nil if the input data is nil.
 func TorrentFromBencodeData(data *bencode.Data) *Torrent {
 	if data == nil {
 		return nil
@@ -212,6 +216,10 @@ func TorrentFromBencodeData(data *bencode.Data) *Torrent {
 	return torrent
 }
 
+// TorrentFromBytes parses a byte slice containing torrent file data and converts it to a Torrent struct.
+// This is typically used when reading a .torrent file from disk.
+// It first decodes the bencode data and then converts it to a Torrent struct.
+// Returns an error if the bencode data cannot be decoded.
 func TorrentFromBytes(data []byte) (*Torrent, error) {
 	bencodeData, _, err := bencode.Decode(data)
 	if err != nil {
@@ -220,6 +228,14 @@ func TorrentFromBytes(data []byte) (*Torrent, error) {
 	return TorrentFromBencodeData(bencodeData), nil
 }
 
+// VerifyTorrent checks if the files described in a torrent file exist at the given contentPath
+// and validates their integrity by comparing the SHA-1 hashes of each piece with those defined in the torrent.
+// This function reads files piece by piece and computes hashes to verify integrity.
+// Parameters:
+//   - filename: Path to the .torrent file to verify
+//   - contentPath: Path to the directory containing the downloaded files
+//
+// Returns an error if verification fails, or nil if all pieces match their expected hashes.
 func VerifyTorrent(filename string, contentPath string) error {
 	println("Opening torrent file: " + filename)
 
@@ -259,6 +275,8 @@ func VerifyTorrent(filename string, contentPath string) error {
 	pieceHashes := torrent.Pieces
 	pieceIndex := 0
 	piece := make([]byte, pieceLength)
+	// Create a single reusable buffer for reading pieces
+	pieceBuf := make([]byte, pieceLength)
 
 	for fileIndex, file := range torrent.FileList {
 		println("Checking " + file.Path)
@@ -267,49 +285,61 @@ func VerifyTorrent(filename string, contentPath string) error {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
 
-		for {
-			pieceTmp := make([]byte, pieceLength)
-			n, err := f.Read(pieceTmp)
-			if err != nil {
-				if err.Error() == "EOF" {
+		// Process the file
+		fileProcessingErr := func() error {
+			defer f.Close() // Close inside the function scope when done with this file
+
+			for {
+				// Use our reusable buffer instead of creating a new one each time
+				n, err := f.Read(pieceBuf)
+				if err != nil {
+					if err.Error() == "EOF" {
+						break
+					}
+					return err
+				}
+				if n == 0 {
 					break
 				}
-				return err
-			}
-			if n == 0 {
-				break
-			}
-			if n < int(pieceLength) {
-				if len(piece) < int(pieceLength) {
-					piece = append(piece, pieceTmp[:n]...)
+				if n < int(pieceLength) {
+					if len(piece) < int(pieceLength) {
+						piece = append(piece, pieceBuf[:n]...)
+					} else {
+						// Copy the data instead of reassigning
+						copy(piece, pieceBuf[:n])
+						// Ensure piece has the right length
+						piece = piece[:n]
+					}
+
+					if fileIndex != len(torrent.FileList)-1 {
+						break
+					}
 				} else {
-					piece = pieceTmp[:n]
+					// Use our buffer directly
+					piece = pieceBuf[:n]
 				}
 
-				if fileIndex != len(torrent.FileList)-1 {
+				hash := sha1.Sum(piece)
+				hashStr := fmt.Sprintf("%x", hash)
+				if hashStr != pieceHashes[pieceIndex] {
+					return fmt.Errorf("piece %d is corrupted", pieceIndex)
+				}
+				pieceIndex++
+				if pieceIndex == len(pieceHashes) {
 					break
 				}
-			} else {
-				piece = pieceTmp
 			}
+			return nil // Add explicit return nil
+		}()
 
-			hash := sha1.Sum(piece)
-			hashStr := fmt.Sprintf("%x", hash)
-			if hashStr != pieceHashes[pieceIndex] {
-				return fmt.Errorf("piece %d is corrupted", pieceIndex)
-			}
-			pieceIndex++
-			if pieceIndex == len(pieceHashes) {
-				break
-			}
-			// piece = make([]byte, pieceLength)
+		// If there was an error processing this file, return it
+		if fileProcessingErr != nil {
+			return fileProcessingErr
 		}
-
 	}
 
-	// for _, file := range torrent.FileList {
+	// Commented out legacy code has been removed
 	// 	filePath := filepath.Join(contentPath, file.Path)
 	// 	fmt.Println("Checking " + filePath)
 	// 	// Open the file
