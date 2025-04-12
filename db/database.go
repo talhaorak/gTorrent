@@ -58,20 +58,6 @@ func (d *Database) CreateDownload(tor *torrent.Torrent, torrentPath string) (*mo
 		TotalSize:       tor.Length,
 	}
 
-	// for i, pieceHash := range tor.Pieces {
-	// 	download.Pieces[i] = models.Piece{
-	// 		Hash:         pieceHash,
-	// 		IsDownloaded: false,
-	// 	}
-	// }
-
-	// for i, announce := range tor.AnnounceList {
-	// 	download.Trackers[i] = models.Tracker{
-	// 		Announce: announce,
-	// 		Status:   models.TrackerAnnouncing,
-	// 	}
-	// }
-
 	err = d.db.Create(download).Error
 	if err != nil {
 		return nil, err
@@ -100,28 +86,6 @@ func (d *Database) CreateDownload(tor *torrent.Torrent, torrentPath string) (*mo
 		}
 	}
 
-	// for _, pieceHash := range tor.Pieces {
-	// 	piece := &PieceModel{
-	// 		Download:     download,
-	// 		Hash:         pieceHash,
-	// 		IsDownloaded: false,
-	// 	}
-	// 	err = d.db.Create(piece).Error
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// }
-
-	// for _, announce := range tor.AnnounceList {
-	// 	tracker := &TrackerModel{
-	// 		Download: download,
-	// 		Announce: announce,
-	// 	}
-	// 	err = d.db.Create(tracker).Error
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// }
 fillup:
 	result := d.db.Preload("Trackers").Preload("Pieces").First(download)
 	if result.Error != nil {

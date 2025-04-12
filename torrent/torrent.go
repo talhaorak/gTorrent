@@ -338,44 +338,5 @@ func VerifyTorrent(filename string, contentPath string) error {
 			return fileProcessingErr
 		}
 	}
-
-	// Commented out legacy code has been removed
-	// 	filePath := filepath.Join(contentPath, file.Path)
-	// 	fmt.Println("Checking " + filePath)
-	// 	// Open the file
-	// 	f, err := os.Open(filePath)
-	// 	if err != nil {
-	// 		return err
-	// 	}
-	// 	defer f.Close()
-
-	// 	// read piece by piece and calculate the hash
-	// 	pieceLength := torrent.PieceLength
-	// 	pieceHashes := file.Pieces
-	// 	pieceIndex := 0
-	// 	for {
-	// 		piece := make([]byte, pieceLength)
-	// 		n, err := f.Read(piece)
-	// 		if err != nil {
-	// 			if err == io.EOF {
-	// 				break
-	// 			}
-	// 			return err
-	// 		}
-	// 		if n == 0 {
-	// 			break
-	// 		}
-	// 		if n < len(piece) {
-	// 			piece = piece[:n]
-	// 		}
-	// 		hash := sha1.Sum(piece)
-	// 		hashStr := fmt.Sprintf("%x", hash)
-	// 		if hashStr != pieceHashes[pieceIndex] {
-	// 			return fmt.Errorf("piece %d is corrupted", pieceIndex)
-	// 		}
-	// 		pieceIndex++
-	// 	}
-	// }
-
 	return nil
 }

@@ -14,7 +14,7 @@ type Peer struct {
 }
 
 func PeerMe() *Peer {
-	// genarete a 20 byte random peer ID
+	// Genarete a 20 byte random peer ID
 	id := make([]byte, 20)
 	rand.Read(id)
 
