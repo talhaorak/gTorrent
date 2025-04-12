@@ -1,0 +1,29 @@
+{
+    "announce": "http://tracker.best-torrents.net:6969/announce",
+    "announce-list": [
+        [
+            "http://tracker.best-torrents.net:6969/announce"
+        ],
+        [
+            "udp://tracker.publicbt.com:80/announce"
+        ],
+        [
+            "udp://tracker.openbittorrent.com:80/announce"
+        ],
+        [
+            "http://tracker.publicbt.com/announce"
+        ]
+    ],
+    "comment": "Example torrent file for gorrent",
+    "created by": "gorrent",
+    "creation date": 1714777334,
+    "info": {
+        "length": 425388,
+        "name": "Meditations - Marcus Aurelius.txt",
+        "piece length": 32768,
+        "pieces": "%04LY%d8%1d%0f%92%b2=C%e8o%fd%85%a9T%08%d2%a0%95%b8%ab-s%1e%01%06%ac%ea%90%81y%fb%07e%1b!%8ai%ade%83%8b%cc%ef%02%12%d36#%15%ba%e9%ebJ%f50U%93%07%ea6E%fbT%95%b9%b6%cdL#%d1Z%18%8a`%b9:%ee%a6%ad~%d2%14%8c%09%83%ces%a2%cb%88%a6U%f2%82|-%1d%88%9f+X3%e4%de%a3%17%9a%e9%17%98%eaO%fa%a9%e7%d9%a0%ed%09%a4%80%ab%05Q%99%87/%16%9eN%a7%02W%aey%ec%06%adG'%faH%f3%e8%b0r%e1%06%0f%cd%f0%05%c1%eeMe%8a%e2%df%06Z%05;%ae\"%06|x %f9%ae%fbg%d1%dc%07r%9b%f0%f5Q%c0%e5d%e0+%f3%b08$ln%9b%06c%d5%a1%13%fc %01J%d4y%e7?%80%f1+c%99%902Z{%e0%98%0b%af%9cS%cc%0b:D>ON(%91%c3%90%e2+7%b3%c1%9dTxz%06v%ff%85%d7%b4%db%cd%be%12%e6%c7%f1`G%d2%96",
+        "private": 1
+    },
+    "publisher": "The Project Gutenberg",
+    "publisher-url": "https://www.gutenberg.org/cache/epub/2680/pg2680.txt"
+}
